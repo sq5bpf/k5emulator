@@ -1,0 +1,51 @@
+Quansheng UV-K5 emulator v0.1 
+(c) 2023 Jacek Lipkowski <sq5bpf@lipkowski.org>
+
+This program connects to a unix socket (default /tmp/sock1 )
+and looks like a UV-K5 radio to radio programming software.
+
+The radio eeprom is simulated by the file k5_eeprom_test.raw
+
+This can be used to reverse engineer the eeprom contents by
+observing how the original radio programming software changes them.
+
+This can also be used to debug third party programming software,
+like for example k5prog https://github.com/sq5bpf/k5prog
+
+Note: this is a one-off hack which i wrote for my own purpose, 
+horrible code which will cause your eyes to bleed, with no error
+checking etc. 
+
+
+Usage:
+
+Te primary use is to connect it to an emulated serial port provided by
+virt-manager. The serial port in virt-manager should be configured as a 
+unix socket, with path /tmp/sock1
+
+The virt-manager VM runs windows and the Quansheng programming software.
+
+
+If you want to interface this with something else, then use the magic of
+socat.
+
+
+I usually use these steps:
+
+- read configuration from radio by the windows programming software
+- change something
+- write configuration to radio
+- see what bytes changed
+
+The differences can be found by vbindiff, or the binarydiff script:
+
+./binarydiff uvk5_original_eeprom.raw k5_eeprom_test.raw
+
+
+Hope this is useful in your reverse engineering efforts :)
+
+VY 73
+
+Jacek / SQ5BPF
+
+

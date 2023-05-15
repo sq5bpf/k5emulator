@@ -1,0 +1,8 @@
+#!/bin/sh
+#poor mans binary differ --sq5bpf
+PL=hex_$$_
+xxd $1 > ${PL}1
+xxd $2 > ${PL}2
+diff -u  ${PL}1  ${PL}2
+rm  ${PL}1  ${PL}2
+
