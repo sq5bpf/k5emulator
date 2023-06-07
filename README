@@ -48,9 +48,9 @@ socat -d -d PTY,rawer unix-listen:/tmp/sock2
 ./k5emulator /tmp/sock2
 
 - Look at the socat output, it will say what pty is used, for example
-  /dev/pty/16
+  /dev/pts/16
 
-- Launch chirp, read from radio, use custom serial port /dev/pty/16 
+- Launch chirp, read from radio, use custom serial port /dev/pts/16 
   (input the one given by socat above), select radio Quansheng UV-K5
 
 - Now you can read and write the emulated radio both with the vendor software
