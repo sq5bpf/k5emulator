@@ -26,6 +26,37 @@ unix socket, with path /tmp/sock1
 The virt-manager VM runs windows and the Quansheng programming software.
 
 
+To connect a unix program, such as chirp, use socat.
+
+
+
+Example with chirp under linux, vendor software under windows:
+
+- Configure a windows VM under virt-manager with a serial port connected to
+/tmp/sock1
+
+- If your user doesn't have access to /tmp/sock1, then either add to the
+  libvirt-qemu group, or for now sudo chmod 666 /tmp/sock1
+
+- In the k5emulator directory launch:
+./k5emulator /tmp/sock1
+
+- Launch socat to connect unix socket and pty:
+socat -d -d PTY,rawer unix-listen:/tmp/sock2
+
+- In the k5emulator directory launch:
+./k5emulator /tmp/sock2
+
+- Look at the socat output, it will say what pty is used, for example
+  /dev/pty/16
+
+- Launch chirp, read from radio, use custom serial port /dev/pty/16 
+  (input the one given by socat above), select radio Quansheng UV-K5
+
+- Now you can read and write the emulated radio both with the vendor software
+  and with chirp. 
+
+
 If you want to interface this with something else, then use the magic of
 socat.
 
@@ -41,6 +72,8 @@ The differences can be found by vbindiff, or the binarydiff script:
 
 ./binarydiff uvk5_original_eeprom.raw k5_eeprom_test.raw
 
+You can also use findflips, which was written for reverse engineering efforts
+like this: https://github.com/sq5bpf/findflips
 
 Hope this is useful in your reverse engineering efforts :)
 
