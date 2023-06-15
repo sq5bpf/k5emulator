@@ -1,4 +1,4 @@
-/* Quansheng UV-K5 emulator v0.1 
+/* Quansheng UV-K5 emulator v0.2 
  * (c) 2023 Jacek Lipkowski <sq5bpf@lipkowski.org>
  *
  * This program connects to a unix socket (default /tmp/sock1 )
@@ -48,8 +48,21 @@
 #include <stdint.h>
 #include <fcntl.h>
 
+#define VERSION "Quansheng UV-K5 emulator v0.2 (c) 2023 Jacek Lipkowski <sq5bpf@lipkowski.org>"
+
+
+#define CONNECT_SOCKET "/tmp/sock1"
+
+char *socket_path = CONNECT_SOCKET;
 
 int verbose=0;
+int flash_mode=0;
+
+#define STATE_NORMAL 0
+#define STATE_FLASH_BROADCAST 1
+#define STATE_FLASH_ONGOING 2
+
+int state=STATE_NORMAL;
 
 struct k5_command {
 	unsigned char *cmd;
@@ -130,8 +143,8 @@ int read_timeout(int fd, unsigned char *buf, int maxlen, int timeout)
 		if (timeout<0) {
 			ret=select(fd+1,&rfd,0,0,0);
 		} else {
-			tv.tv_sec=timeout/1000;
-			tv.tv_usec=(timeout%1000)/1000;
+			tv.tv_sec=timeout/1000000;
+			tv.tv_usec=(timeout%1000000);
 			ret=select(fd+1,&rfd,0,0,&tv);
 		}
 		if (FD_ISSET(fd,&rfd)) {
@@ -145,7 +158,7 @@ int read_timeout(int fd, unsigned char *buf, int maxlen, int timeout)
 
 
 		if (ret==0)  {
-			fprintf(stderr,"read_timeout\n");
+			//		fprintf(stderr,"read_timeout\n");
 			/* error albo timeout */
 			break;
 		}
@@ -220,12 +233,12 @@ int k5_obfuscate(struct k5_command *cmd)
 	cmd->obfuscated_cmd[3]=0; /* or maybe more significant byte of length? */
 	memcpy((cmd->obfuscated_cmd)+4,cmd->cmd,cmd->len);
 	c=crc16xmodem((cmd->obfuscated_cmd)+4,cmd->len,0);
-/*
-  cmd->obfuscated_cmd[cmd->len+4]=c&0xff;
-	cmd->obfuscated_cmd[cmd->len+5]=(c>>8)&0xff;
-*/
-cmd->obfuscated_cmd[cmd->len+4]=0xff;
-cmd->obfuscated_cmd[cmd->len+5]=0xff;
+	/*
+	   cmd->obfuscated_cmd[cmd->len+4]=c&0xff;
+	   cmd->obfuscated_cmd[cmd->len+5]=(c>>8)&0xff;
+	   */
+	cmd->obfuscated_cmd[cmd->len+4]=0xff;
+	cmd->obfuscated_cmd[cmd->len+5]=0xff;
 
 	xorarr((cmd->obfuscated_cmd)+4,cmd->len+2);
 	cmd->obfuscated_cmd[cmd->len+6]=0xdc;
@@ -266,11 +279,11 @@ int k5_deobfuscate(struct k5_command *cmd)
 		cmd->crcok=1;
 		cmd->len=cmd->len-2; /* skip crc */
 	} else {
-	/*	if (d==c) {
+		/*	if (d==c) {
 			printf("** the protocol actually uses proper crc on datagrams from the radio, please inform the author of the radio/firmware version\n");
 			k5_hexdump(cmd);
-		}
-	*/
+			}
+			*/
 		cmd->crcok=0;
 		if (verbose>2)  { printf("bad crc 0x%4.4x (should be 0x%4.4x)\n",d,c); k5_hexdump(cmd); }
 		cmd->len=cmd->len-2; /* skip crc */
@@ -290,8 +303,11 @@ int k5_send_cmd(int fd,struct k5_command *cmd) {
 		return(0);
 	}
 
-	if (verbose>1) k5_hexdump(cmd);
-
+	if (verbose>1) 
+	{
+		printf("++++  sending command\n");		
+		k5_hexdump(cmd);
+	}
 	l=write(fd,cmd->obfuscated_cmd,cmd->obfuscated_len);
 	if (verbose>2) printf("write %i\n",l);
 	return(1);
@@ -311,14 +327,20 @@ int k5_send_buf(int fd,unsigned char *buf,int len) {
 }
 
 /* receive a response, deobfuscate it */
-struct k5_command *k5_receive(int fd) {
+struct k5_command *k5_receive(int fd,int timeout) {
 	unsigned char buf[4];
-	unsigned char buf2[2048];
+	unsigned char buf2[65536];
 	struct k5_command *cmd;
 	int len;
+	int enclen;
 
-	len=read_timeout(fd,(unsigned char *)&buf,sizeof(buf),-1); /* wait 500ms */
+	len=read_timeout(fd,(unsigned char *)&buf,sizeof(buf),timeout); /* wait 500ms */
+	if ((timeout)&&(len<1)) 
+	{
+		//printf("jest timeout");
 
+		return(0);
+	}
 	if (len>0) {
 		if (verbose>2)  { printf("magic:\n"); hdump((unsigned char *)&buf,len); }
 	} else
@@ -333,16 +355,17 @@ struct k5_command *k5_receive(int fd) {
 		return(0);
 	}
 
-	if (buf[3]!=0) {
+	if ((state==STATE_NORMAL)&&(buf[3]!=0)) {
 		fprintf(stderr,"k5_receive: it seems that byte 3 can be something else than 0, please notify the author\n");
 		return(0);
 	}
 
 	cmd=calloc(sizeof(struct k5_command),1);
-	cmd->obfuscated_len=buf[2]+8;
+	enclen=(buf[3]<<8)+buf[2];
+	cmd->obfuscated_len=enclen+8;
 	cmd->obfuscated_cmd=calloc(cmd->obfuscated_len,1);
 	memcpy(cmd->obfuscated_cmd,buf,4);
-	len=read_timeout(fd,cmd->obfuscated_cmd+4,buf[2]+4,10000); /* wait 500ms */
+	len=read_timeout(fd,cmd->obfuscated_cmd+4,enclen+4,100000); /* wait 500ms */
 	if ((len+4)!=(cmd->obfuscated_len)) {
 		fprintf(stderr,"k5_receive err read1 len=%i wanted=%i\n",len,cmd->obfuscated_len);
 		return(0);
@@ -351,7 +374,10 @@ struct k5_command *k5_receive(int fd) {
 
 	/* deobfuscate */
 	k5_deobfuscate(cmd);
-	if (verbose>2)  k5_hexdump(cmd);
+	if (verbose>2)  
+	{
+		k5_hexdump(cmd);
+	}
 	return(cmd);
 }
 /*
@@ -371,30 +397,35 @@ struct k5_command *k5_receive(int fd) {
 */
 
 #define EEPROMFILE "k5_eeprom_test.raw"
+#define FLASHFILE "k5_flash_test.raw"
 
 int handle_cmd(int fd,struct k5_command *cmd) {
 	unsigned char command,len,memlen;
 	uint16_t addr;
 	unsigned char sendbuf[512];
-			int fd2;
+	int fd2;
+	int faddr;
+	int flen;
 	/* byte3 - command length, byte6 - data to be written length, byte4 - (lsb) byte5( msb) address, byte12-end data */
+	if ( cmd->cmd==0) return(0);
 	command=cmd->cmd[0];
 	len=cmd->cmd[3];
 	memlen=cmd->cmd[6];
 	addr=(cmd->cmd[4])|(cmd->cmd[5]<<8);
 
-if (verbose>1) {
-	printf("XXXXXXXXXXXXXXXXXXXXXXXX   command=0x%2.2x len=0x%2.2x addr=0x%4.4x memlen=0x%2.2x\n",command,len,addr,memlen);
+	if (verbose>1) {
+		printf("++++   received command\n");
+		printf("XXX  command=0x%2.2x len=0x%2.2x addr=0x%4.4x memlen=0x%2.2x\n",command,len,addr,memlen);
 
 
-	k5_hexdump(cmd);
+		k5_hexdump(cmd);
 
 
 
-	printf("xxxxxxxxxxxxx   response   xxxxxxxxxxxxxxxxx\n\n\n");
-}
+		printf("xxxxxxxxxxxxx   response   xxxxxxxxxxxxxxxxx\n\n\n");
+	}
 	memcpy((void *)&sendbuf,cmd->cmd,8);
-sendbuf[0]=command+1; /* response is 1 higher than reqest */
+	sendbuf[0]=command+1; /* response is 1 higher than reqest */
 
 	switch(command) {
 
@@ -442,15 +473,109 @@ sendbuf[0]=command+1; /* response is 1 higher than reqest */
 		case 0xdd:
 			printf("RESET REQUEST\n");
 			break;
+
+		case 0x30:
+			printf("GET READY FOR FLASHING REQUEST\n");
+			state=STATE_FLASH_ONGOING;
+
+			unsigned char freply[] = {
+				0x18, 0x5, 0x20, 0x0, 0x1, 0x2, 0x2, 0x6,
+				0x1c, 0x53, 0x50, 0x4a, 0x37, 0x47, 0xff, 0xf, 
+				0x8c, 0x0, 0x53, 0x0, 0x32, 0x2e, 0x30, 0x30, 
+				0x2e, 0x30, 0x36, 0x0, 0x34, 0xa, 0x0, 0x0, 
+				0x0, 0x0, 0x0, 0x20, 0xd1, 0x6e, 0xd1, 0xfa, 
+				0x8a, 0xf8, 0xd9, 0x40, 0x1f, 0x6a, 0xf5, 0x66, 
+				0x29, 0x3, 0xea, 0xd9, 0xf, 0xa4, 0xd8, 0x0
+			};
+
+			k5_send_buf(fd,freply,sizeof(freply));
+
+
+			break;
+		case 0x19:
+			faddr=(cmd->cmd[9])|(cmd->cmd[8]<<8);
+			flen=(cmd->cmd[12])|(cmd->cmd[13]<<8);
+			printf("FLASH addr=0x%4.4x len=0x%4.4x\n",faddr,flen);
+
+			unsigned char flash_ack[]={ 0x1a, 0x5, 0x8, 0x0, 0x11, 0xfe, 0xf3, 0x7f, 0xe4, 0x0, 0x0, 0x0 };
+
+			/* data at 08 */
+			fd2=open(FLASHFILE,O_WRONLY|O_CREAT,0644);
+			lseek(fd2,faddr,SEEK_SET);
+			write(fd2,(void *)cmd->cmd+16,flen);
+			close(fd2);
+
+
+			flash_ack[8]=cmd->cmd[8]; flash_ack[9]=cmd->cmd[9]; //address
+			//flash_ack[12]=cmd->cmd[12]; flash_ack[13]=cmd->cmd[13]; //length
+			k5_send_buf(fd,flash_ack,sizeof(flash_ack));
+			break;
+
 		default:
 			printf("Unknown command=0x%2.2x len=0x%2.2x addr=0x%4.4x memlen=0x%2.2x\n",command,len,addr,memlen);
 	}
-if (verbose>2)
-	printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\n\n");
+	if (verbose>2)
+		printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\n\n");
+}
+
+void send_firmware_hello(int fd) {
+	unsigned char command,len,memlen;
+	uint16_t addr;
+	unsigned char sendbuf[512];
+
+
+	/* S.2.00.06.4 , changing the 2 to 3 causes complains that the file version is incorrect */
+	unsigned char firmware_hello[]={ 
+		0x18, 0x5, 0x20, 0x0, 0x1, 0x2, 0x2, 0x6, 0x1c, 
+		0x53, 0x50, 0x4a, 0x37, 0x47, 0xff, 0xf, 0x8c, 0x0, 
+		0x53, 0x0, 0x32, 0x2e, 0x30, 0x30, 0x2e, 0x30, 0x36, 
+		0x0, 0x34, 0xa, 0x0, 0x0, 0x0, 0x0, 0x0, 0x20 };
+
+
+	k5_send_buf(fd,firmware_hello,sizeof(firmware_hello));
+
+
 }
 
 
-char *socket_path = "/tmp/sock1";
+void helpme() {
+	printf("k5emulator\n"
+			"cmdline opts:\n"
+			"-s <unix socket>\tunix socket, that we will connect to\n"
+			"-v\tincrease verbosity\n"
+			"-f\temulate a radio in flash mode\n"
+			"-h\tprint this help\n");
+
+}
+
+void parse_cmdline(int argc, char **argv)
+{
+	int opt;
+	while ((opt=getopt(argc,argv,"vfhs:"))!=EOF) {
+		switch (opt)
+		{
+			case 'h':
+				helpme();
+				exit(0);
+				break;
+			case 'v':
+				verbose++;
+				break;
+
+			case 'f':
+				flash_mode=1;
+				break;
+			case 's':
+				socket_path=optarg;
+				break;
+			default:
+				fprintf(stderr,"Unknown command line option %s\n",optarg);
+				exit(1);
+				break;
+		}
+	}
+}
+
 
 int main(int argc, char *argv[]) {
 	struct sockaddr_un addr;
@@ -458,7 +583,11 @@ int main(int argc, char *argv[]) {
 	int fd,rc;
 	struct k5_command *cmd;
 
-	if (argc > 1) socket_path=argv[1];
+	printf (VERSION "\n\n");
+
+	parse_cmdline(argc,argv);
+
+	printf("\nverbosity: %i listening on: %s flash mode:%i\n",verbose,socket_path,flash_mode);
 
 	if ( (fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
 		perror("socket error");
@@ -479,30 +608,27 @@ int main(int argc, char *argv[]) {
 		exit(-1);
 	}
 
+	if (flash_mode) state=STATE_FLASH_BROADCAST;
+
+
 	while(1) {
-		cmd=k5_receive(fd);
+		if (state==STATE_FLASH_BROADCAST) {
+			cmd=k5_receive(fd,250000); // every 250ms
+			if (!cmd) {
+				send_firmware_hello(fd);
+
+			}
+		} else {
+			cmd=k5_receive(fd,-1);
+		}
 		if (cmd) {
+			fflush(stdout);
 			handle_cmd(fd,cmd);
 			destroy_k5_struct(cmd);
 
 		}
-
-
 	}
 
-	/*	while( (rc=read(fd, buf, sizeof(buf))) > 0) {
-		hdump(buf,rc);
-		}
-		*/	/*
-			   while( (rc=read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
-			   if (write(fd, buf, rc) != rc) {
-			   if (rc > 0) fprintf(stderr,"partial write");
-			   else {
-			   perror("write error");
-			   exit(-1);
-			   }
-			   }
-			   }
-			   */
+
 	return 0;
 }
